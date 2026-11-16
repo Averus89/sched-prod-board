@@ -48,11 +48,30 @@ function renderAction(li, id) {
   });
 }
 
-function render(incidents) {
-  // R1: newest first, whatever order the API sends.
-  const sorted = [...incidents].sort((a, b) => Date.parse(b.openedAt) - Date.parse(a.openedAt));
+const newBar = document.querySelector('[data-testid="new-bar"]');
+let latest = []; // the newest answer, newest first; held back from the list until on-call asks for it
+
+const newestFirst = (incidents) => [...incidents].sort((a, b) => Date.parse(b.openedAt) - Date.parse(a.openedAt));
+
+function fillRow(li, i) {
+  li.className = `row ${i.severity}`;
+  const t = li.querySelector('time');
+  if (!t) {
+    li.innerHTML = rowHtml(i);
+  } else {
+    t.setAttribute('datetime', i.openedAt);
+    t.textContent = localTime(i.openedAt);
+    li.querySelector('.what').textContent = `${i.service} · ${i.region} · ${i.summary}`;
+    li.querySelector('.sev').textContent = i.severity;
+  }
+  renderAction(li, i.id);
+}
+
+// Puts the latest answer on screen: new rows at the top (R1), gone rows off. Only on first load, on an
+// empty board, or when on-call clicks the "N new" bar — never on its own while rows are on screen.
+function showLatest() {
   const seen = new Set();
-  sorted.forEach((i, idx) => {
+  latest.forEach((i, idx) => {
     seen.add(i.id);
     let li = rows.get(i.id);
     if (!li) {
@@ -61,22 +80,32 @@ function render(incidents) {
       li.dataset.id = i.id;
       rows.set(i.id, li);
     }
-    li.className = `row ${i.severity}`;
-    const t = li.querySelector('time');
-    if (!t) {
-      li.innerHTML = rowHtml(i);
-    } else {
-      t.setAttribute('datetime', i.openedAt);
-      t.textContent = localTime(i.openedAt);
-      li.querySelector('.what').textContent = `${i.service} · ${i.region} · ${i.summary}`;
-      li.querySelector('.sev').textContent = i.severity;
-    }
-    renderAction(li, i.id);
+    fillRow(li, i);
     if (list.children[idx] !== li) list.insertBefore(li, list.children[idx] || null);
   });
   for (const [id, li] of rows) if (!seen.has(id)) { li.remove(); rows.delete(id); }
-  empty.hidden = sorted.length > 0;
+  updateBar();
 }
+
+// A refresh while rows are on screen: rows stay where they are (only their text is kept current);
+// what is new waits behind the bar.
+function hold(incidents) {
+  latest = newestFirst(incidents);
+  if (rows.size === 0) return showLatest();
+  for (const i of latest) { const li = rows.get(i.id); if (li) fillRow(li, i); }
+  updateBar();
+}
+
+function updateBar() {
+  const fresh = latest.filter((i) => !rows.has(i.id)).length;
+  newBar.textContent = fresh === 1 ? '1 new incident · show' : `${fresh} new incidents · show`;
+  newBar.classList.toggle('on', fresh > 0); // the slot keeps its height, so the list never moves
+  newBar.setAttribute('aria-hidden', String(fresh === 0));
+  newBar.tabIndex = fresh > 0 ? 0 : -1;
+  empty.hidden = rows.size > 0 || latest.length > 0;
+}
+
+newBar.addEventListener('click', () => { if (newBar.classList.contains('on')) showLatest(); });
 
 function showError(e) {
   errorBox.textContent = String(e.message || e);
@@ -89,7 +118,7 @@ async function refresh() {
   busy = true;
   try {
     const page = await fetchIncidents();
-    render(page.incidents);
+    hold(page.incidents);
     errorBox.hidden = true;
   } catch (e) {
     showError(e);
